@@ -1,5 +1,5 @@
-import Solicitante from "../pages/solicitante/Solicitante";
+import ADM from "../pages/gerente/ADM";
 
 export function App() {
-  return <Solicitante />;
+  return <ADM />;
 }
