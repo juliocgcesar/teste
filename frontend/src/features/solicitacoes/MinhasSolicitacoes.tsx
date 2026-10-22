@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import "./MinhasSolicitacoes.css";
+import "./DetalhesSolicitacao.css";
 
-type Status =
+export type Status =
   | "Pendente"
   | "Agendada"
   | "Aprovada"
@@ -9,12 +10,27 @@ type Status =
   | "Em andamento"
   | "Concluída";
 
-interface Solicitacao {
+export interface Solicitacao {
   ticket: string;
   data: string;
   horario: string;
   destino: string;
   status: Status;
+  instituicao?: string;
+  solicitante?: string;
+  origem?: string;
+  quantidadePassageiros?: number;
+  finalidade?: string;
+  observacoes?: string;
+  criadaEm?: string;
+  documentos?: string;
+  motorista?: string;
+  veiculo?: string;
+  motivoRecusa?: string;
+}
+
+interface MinhasSolicitacoesProps {
+  onVerDetalhes: (solicitacao: Solicitacao) => void;
 }
 
 const solicitacoes: Solicitacao[] = [
@@ -24,6 +40,14 @@ const solicitacoes: Solicitacao[] = [
     horario: "14:00",
     destino: "Laboratório Central",
     status: "Pendente",
+    instituicao: "Hemose",
+    solicitante: "Mariana Santos",
+    origem: "Hemose",
+    quantidadePassageiros: 2,
+    finalidade: "Entrega de amostras para análise",
+    observacoes: "Material acondicionado conforme protocolo.",
+    criadaEm: "22/09/2026 às 09:18",
+    documentos: "Caixa térmica com amostras",
   },
   {
     ticket: "TRP-1043",
@@ -31,6 +55,13 @@ const solicitacoes: Solicitacao[] = [
     horario: "10:15",
     destino: "Secretaria de Estado da Saúde",
     status: "Pendente",
+    instituicao: "Hemose",
+    solicitante: "Mariana Santos",
+    origem: "Hemose",
+    quantidadePassageiros: 3,
+    finalidade: "Reunião institucional",
+    observacoes: "Retorno previsto para 12:30.",
+    criadaEm: "21/09/2026 às 16:42",
   },
   {
     ticket: "TRP-1042",
@@ -38,6 +69,15 @@ const solicitacoes: Solicitacao[] = [
     horario: "08:30",
     destino: "Hospital Universitário",
     status: "Agendada",
+    instituicao: "Hemose",
+    solicitante: "Mariana Santos",
+    origem: "Hemose",
+    quantidadePassageiros: 4,
+    finalidade: "Visita técnica da equipe",
+    observacoes: "A equipe estará no portão principal às 08:20.",
+    criadaEm: "19/09/2026 às 11:05",
+    motorista: "Carlos Almeida",
+    veiculo: "Fiat Cronos • QWE-4D21",
   },
   {
     ticket: "TRP-1041",
@@ -45,6 +85,14 @@ const solicitacoes: Solicitacao[] = [
     horario: "13:30",
     destino: "Centro Administrativo",
     status: "Aprovada",
+    instituicao: "Hemose",
+    solicitante: "Mariana Santos",
+    origem: "Hemose",
+    quantidadePassageiros: 2,
+    finalidade: "Entrega e retirada de documentos",
+    observacoes: "Aguardar protocolo de recebimento.",
+    criadaEm: "18/09/2026 às 14:20",
+    documentos: "Dois envelopes lacrados",
   },
   {
     ticket: "TRP-1040",
@@ -52,6 +100,15 @@ const solicitacoes: Solicitacao[] = [
     horario: "09:00",
     destino: "Unidade de Saúde Farolândia",
     status: "Recusada",
+    instituicao: "Hemose",
+    solicitante: "Mariana Santos",
+    origem: "Hemose",
+    quantidadePassageiros: 5,
+    finalidade: "Apoio a ação externa",
+    observacoes: "Saída pela recepção administrativa.",
+    criadaEm: "17/09/2026 às 10:12",
+    motivoRecusa:
+      "Não há disponibilidade operacional para o horário solicitado. Registre uma nova solicitação para outra data.",
   },
   {
     ticket: "TRP-1039",
@@ -59,6 +116,15 @@ const solicitacoes: Solicitacao[] = [
     horario: "07:45",
     destino: "Hospital de Urgências",
     status: "Em andamento",
+    instituicao: "Hemose",
+    solicitante: "Mariana Santos",
+    origem: "Hemose",
+    quantidadePassageiros: 2,
+    finalidade: "Transporte de equipe técnica",
+    observacoes: "Atendimento em curso.",
+    criadaEm: "16/09/2026 às 08:57",
+    motorista: "Ana Ribeiro",
+    veiculo: "Renault Duster • RST-8J10",
   },
   {
     ticket: "TRP-1035",
@@ -66,6 +132,15 @@ const solicitacoes: Solicitacao[] = [
     horario: "11:00",
     destino: "Maternidade Nossa Senhora",
     status: "Concluída",
+    instituicao: "Hemose",
+    solicitante: "Mariana Santos",
+    origem: "Hemose",
+    quantidadePassageiros: 3,
+    finalidade: "Visita de acompanhamento",
+    observacoes: "Atendimento realizado sem intercorrências.",
+    criadaEm: "11/09/2026 às 15:33",
+    motorista: "Paulo Mendes",
+    veiculo: "Chevrolet Spin • QAB-2C34",
   },
 ];
 
@@ -126,10 +201,14 @@ function Icone({
           <path d="M5 12h14M13 6l6 6-6 6" />
         </svg>
       );
+    default:
+      return null;
   }
 }
 
-export default function MinhasSolicitacoes() {
+export default function MinhasSolicitacoes({
+  onVerDetalhes,
+}: MinhasSolicitacoesProps) {
   const [busca, setBusca] = useState("");
   const [status, setStatus] = useState("");
   const [periodo, setPeriodo] = useState("");
@@ -304,6 +383,7 @@ export default function MinhasSolicitacoes() {
                     className="solicitacoes__botao-detalhes"
                     type="button"
                     aria-label={`Ver detalhes de ${solicitacao.ticket}`}
+                    onClick={() => onVerDetalhes(solicitacao)}
                   >
                     <span>Ver detalhes</span>
                     <Icone nome="seta" />
@@ -324,7 +404,4 @@ export default function MinhasSolicitacoes() {
       </div>
     </section>
   );
-  
 }
-
-
