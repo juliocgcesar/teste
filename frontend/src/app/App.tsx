@@ -1,10 +1,5 @@
-import { GestorLayout } from "../layouts/GestorLayout";
-import { Dashboard } from "../pages/gerente/Dashboard";
+import Solicitante from "../pages/solicitante/Solicitante";
 
 export function App() {
-  return (
-    <GestorLayout>
-      <Dashboard />
-    </GestorLayout>
-  );
+  return <Solicitante />;
 }
