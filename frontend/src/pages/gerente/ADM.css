@@ -106,7 +106,6 @@ a {
   box-shadow: inset 2px 0 #1d9be5;
 }
 
-/* Alinhamento dos ícones SVG do menu */
 .fleet-nav-icon {
   display: inline-grid;
   flex: 0 0 16px;

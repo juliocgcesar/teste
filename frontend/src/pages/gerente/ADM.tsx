@@ -177,7 +177,7 @@ export default function ADM() {
             </div>
           </div>
 
-          <PainelADM />
+          <WidgetsADM />
 
         </main>
       </div>
