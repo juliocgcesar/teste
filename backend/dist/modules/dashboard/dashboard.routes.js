@@ -1,27 +1,25 @@
-import { validarJwt } from '../../security/jwt.js';
-import { dashboardController, pendenciasController } from './dashboard.controller.js';
-function enviarErro(response, status, code, message) {
-    response.writeHead(status, {
-        'Content-Type': 'application/json; charset=utf-8',
-    });
-    response.end(JSON.stringify({
-        error: { code, message },
-    }));
-}
+import { autenticarRequisicao } from '../../security/session.js';
+import { autorizarPerfis } from '../../security/authorization.js';
+import { dashboardController, dashboardGraficosController, pendenciasController, dashboardGestorController, } from './dashboard.controller.js';
+/** Autoriza as consultas do dashboard; o dispatcher restringe os métodos. */
 export async function dashboardRoute(request, response) {
-    const usuario = await validarJwt(request.headers.authorization);
+    const usuario = await autenticarRequisicao(request, response);
     if (!usuario) {
-        enviarErro(response, 401, 'NAO_AUTENTICADO', 'Autenticação necessária.');
         return;
     }
-    if (usuario.perfil !== 'ADMINISTRADOR' &&
-        usuario.perfil !== 'GESTOR_FROTA') {
-        enviarErro(response, 403, 'ACESSO_NEGADO', 'Acesso não permitido.');
+    if (!autorizarPerfis(usuario, ['ADM', 'GESTOR_FROTA'], response))
+        return;
+    const caminho = new URL(request.url ?? '', `http://${request.headers.host ?? 'localhost'}`).pathname;
+    if (caminho === '/api/dashboard/graficos') {
+        await dashboardGraficosController(response, new URL(request.url ?? '', 'http://localhost').searchParams);
         return;
     }
-    const caminho = new URL(request.url ?? '/', 'http://localhost').pathname;
     if (caminho === '/api/dashboard/pendencias') {
         await pendenciasController(response);
+        return;
+    }
+    if (caminho === '/api/dashboard/gestor') {
+        await dashboardGestorController(response, new URL(request.url ?? '', 'http://localhost').searchParams);
         return;
     }
     dashboardController(response);

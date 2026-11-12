@@ -1,3 +1,4 @@
+import './session-fixture.js';
 import { afterAll, beforeAll, expect, test, vi } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo, Server } from 'node:net';
@@ -7,18 +8,21 @@ import { SignJWT } from 'jose';
 vi.mock('../../src/modules/svo/svo.repository.js', () => ({
   listarOrdensPendentes: vi.fn(),
   criarSolicitacao: vi.fn(),
+  listarSolicitacoes: vi.fn(),
   despacharOrdem: vi.fn(),
 }));
 
+vi.mock('../../src/modules/svo/svo.operacional.repository.js', () => ({
+  prepararDespacho: vi.fn(), recursosDisponiveisSvo: vi.fn(), ocupacaoSvo: vi.fn(),
+  minhasOrdens: vi.fn(), minhaOrdem: vi.fn(), executarOrdem: vi.fn(), cancelarOrdem: vi.fn(),
+}));
 import { createApp, isolarFalhaDaRequisicao } from '../../src/app.js';
 import {
   ErroCorpoRequisicao,
   lerCorpoJson,
 } from '../../src/modules/svo/svo.controller.js';
-import {
-  criarSolicitacao,
-  despacharOrdem,
-} from '../../src/modules/svo/svo.repository.js';
+import { criarSolicitacao } from '../../src/modules/svo/svo.repository.js';
+import { prepararDespacho } from '../../src/modules/svo/svo.operacional.repository.js';
 
 const segredo = 'segredo-ficticio-exclusivo-para-testes';
 const segredoAnterior = process.env.JWT_SECRET;
@@ -63,7 +67,7 @@ afterAll(async () => {
 async function criarToken(perfil: string) {
   return new SignJWT({ perfil })
     .setProtectedHeader({ alg: 'HS256' })
-    .setSubject('1')
+    .setSubject(({ ADM: '-27001', ADMINISTRADOR: '-27001', GESTOR_FROTA: '-27002', SOLICITANTE: '-27003', MOTORISTA: '-27004', ATENDENTE_SVO: '1' } as Record<string, string>)[perfil] ?? '-29999')
     .setIssuedAt()
     .setExpirationTime('1h')
     .sign(new TextEncoder().encode(segredo));
@@ -284,7 +288,7 @@ test('despacho mapeia ordem indisponível, referência e conflito', async () => 
   ] as const;
 
   for (const caso of casos) {
-    vi.mocked(despacharOrdem).mockResolvedValueOnce(
+    vi.mocked(prepararDespacho).mockResolvedValueOnce(
       caso.tipo === 'despachada'
         ? { tipo: 'despachada', ordem: caso.ordem }
         : { tipo: caso.tipo },

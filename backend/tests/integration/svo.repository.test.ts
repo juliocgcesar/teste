@@ -25,9 +25,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   banco().mockReset();
   Object.assign(sql, {
-    begin: vi.fn(async (
-      operacao: (transacao: typeof sql) => Promise<unknown>,
-    ) => operacao(sql)),
+    begin: vi.fn(async (...args: unknown[]) => {
+      const operacao = args.at(-1) as (transacao: typeof sql) => Promise<unknown>;
+      return operacao(sql);
+    }),
   });
 });
 
@@ -43,6 +44,7 @@ test('BE-S5-02 despacha ordem, motorista e veículo elegíveis na mesma transaç
     .mockResolvedValueOnce([{ id: 1 }] as never)
     .mockResolvedValueOnce([{ id: 2, status: 'DISPONIVEL' }] as never)
     .mockResolvedValueOnce([{ id: 3, status: 'DISPONIVEL' }] as never)
+    .mockResolvedValueOnce([] as never)
     .mockResolvedValueOnce([] as never)
     .mockResolvedValueOnce([
       {
@@ -70,8 +72,10 @@ test('BE-S5-02 despacha ordem, motorista e veículo elegíveis na mesma transaç
   });
 
   const consultas = textosSql();
-  expect(consultas).toHaveLength(5);
-  expect(consultas.filter((consulta) => consulta.includes('FOR UPDATE'))).toHaveLength(4);
+  expect(consultas).toHaveLength(6);
+  expect(consultas.filter((consulta) => consulta.includes('FOR UPDATE'))).toHaveLength(3);
+  expect(consultas.some(consulta => consulta.includes('public.solicitacao_viagem'))).toBe(true);
+  expect(consultas.some(consulta => consulta.includes('EM_TRANSPORTE'))).toBe(true);
   expect(consultas.some((consulta) => consulta.includes('PENDENTE_ALOCACAO'))).toBe(true);
   expect(consultas.some((consulta) => consulta.includes('EM_DESLOCAMENTO'))).toBe(true);
   expect(consultas.some((consulta) => consulta.includes('UPDATE public.ordem_coleta'))).toBe(true);
@@ -139,6 +143,14 @@ test('BE-S5-02 não despacha recurso já em deslocamento', async () => {
   expect(textosSql().some((consulta) => consulta.includes('UPDATE public.ordem_coleta'))).toBe(false);
 });
 
+test('SCRUM-139 impede despacho SVO sobre reserva institucional, inclusive futura', async () => {
+  banco().mockResolvedValueOnce([{id:1}]).mockResolvedValueOnce([{id:2,status:'DISPONIVEL'}])
+    .mockResolvedValueOnce([{id:3,status:'DISPONIVEL'}]).mockResolvedValueOnce([]).mockResolvedValueOnce([{id:1024}]);
+  expect(await despacharOrdem({ordemId:1,motoristaId:2,veiculoId:3})).toEqual({tipo:'conflito_alocacao'});
+  expect(textosSql().some(query => query.includes('UPDATE public.ordem_coleta'))).toBe(false);
+  expect(banco().mock.calls[4].slice(1)).toEqual([null,null,'2','3',null,null,null]);
+});
+
 test('BE-S5-02 mapeia referência rejeitada pelo banco sem erro genérico', async () => {
   const erro = new Error('fk') as Error & { code: string };
   erro.code = '23503';
@@ -185,55 +197,34 @@ test('BE-S5-02 propaga falha inesperada do despacho', async () => {
   })).rejects.toThrow('falha inesperada');
 });
 
-test('BE-S5-02 cria solicitação, ordem e atividades', async () => {
-  const consultas = vi
-    .fn()
+test('SCRUM-130 cria ocorrência pendente sem gerar ordem, com atividade única', async () => {
+  const consultas = vi.fn()
     .mockResolvedValueOnce([{ id: '10' }])
-    .mockResolvedValueOnce([
-      { id: '10', codigo: '#SVO-10' },
-    ])
-    .mockResolvedValueOnce([
-      { id: '20', status: 'PENDENTE_ALOCACAO' },
-    ])
+    .mockResolvedValueOnce([{
+      id: '10', codigo: '#SVO-10', status_triagem: 'AGUARDANDO_TRIAGEM',
+      criado_em: new Date('2026-11-04T12:00:00.000Z'),
+    }])
     .mockResolvedValueOnce([]);
-
-  const bancoSimulado = sql;
-
-  const executarTransacao = async (
-    operacao: (transacao: typeof sql) => Promise<unknown>,
-  ) => {
-    return await operacao(consultas as unknown as typeof sql);
-  };
-
-  const iniciarTransacao = vi.fn(executarTransacao);
-
-Object.assign(bancoSimulado, {
-  begin: iniciarTransacao,
-});
+  const iniciarTransacao = vi.fn(async (op: (tx: typeof sql) => Promise<unknown>) =>
+    op(consultas as unknown as typeof sql));
+  Object.assign(sql, { begin: iniciarTransacao });
 
   const resultado = await criarSolicitacao({
-    atendenteId: '1',
-    localFalecimento: 'Hospital Teste',
-    enderecoRemocao: 'Rua Teste, 123',
-    solicitanteNome: 'Pessoa Teste',
+    atendenteId: '1', localFalecimento: 'Hospital Teste',
+    enderecoRemocao: 'Rua Teste, 123', solicitanteNome: 'Pessoa Teste',
+    pontoReferencia: 'Próximo ao hospital',
   });
-
   expect(resultado).toEqual({
     solicitacao: {
-      id: 10,
-      codigo: '#SVO-10',
+      id: '10', codigo: '#SVO-10', statusTriagem: 'AGUARDANDO_TRIAGEM',
+      criadoEm: '2026-11-04T12:00:00.000Z',
     },
-    ordemColeta: {
-      id: 20,
-      codigo: '#OC-20',
-      status: 'PENDENTE_ALOCACAO',
-    },
-    atividades: [
-      'Solicitação #SVO-10 confirmada na ligação',
-      'Ordem de coleta #OC-20 gerada para #SVO-10',
-    ],
+    atividades: ['Solicitação #SVO-10 registrada por telefone'],
   });
-
-  expect(consultas).toHaveBeenCalledTimes(4);
+  expect(consultas).toHaveBeenCalledTimes(3);
+  const statements = consultas.mock.calls.map(call => (call[0] as TemplateStringsArray).join(' ')).join('\n');
+  expect(statements).toContain('INSERT INTO public.solicitacao_obito');
+  expect(statements).toContain('AGUARDANDO_TRIAGEM');
+  expect(statements).not.toContain('INSERT INTO public.ordem_coleta');
   expect(iniciarTransacao).toHaveBeenCalledOnce();
 });
