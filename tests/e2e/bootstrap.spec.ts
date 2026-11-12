@@ -1,18 +1,162 @@
 import { expect, test } from '@playwright/test';
+import { verifiedSql } from '../../backend/src/database/scripts/verify-test-db.js';
+import { svoDashboardSchemas } from '../../backend/src/modules/svo/svo.dashboard.schemas.js';
+
+let admToken:string;
+let svoToken:string;
+let svoId:string;
+let sql:Awaited<ReturnType<typeof verifiedSql>>;
+test.beforeAll(async({request})=>{
+  await expect.poll(async()=>(await request.get('/api/auth/sessao')).status(),{timeout:20_000}).toBe(401);
+  const login=await request.post('/api/auth/login',{data:{email:'t1-adm@example.invalid',senha:'T1-fixture-2026!'}});
+  expect(login.status()).toBe(200);admToken=(await login.json()).token;
+  const created=await request.post('/api/admin/usuarios',{headers:{Authorization:`Bearer ${admToken}`},
+    data:{nome:'Fixture T30 SVO',email:'t30-svo-e2e@example.invalid',senha:'T30-fixture-2026!',perfil:'ATENDENTE_SVO'}});
+  expect(created.status()).toBe(201);svoId=String((await created.json()).id);
+  const session=await request.post('/api/auth/login',{data:{email:'t30-svo-e2e@example.invalid',senha:'T30-fixture-2026!'}});
+  expect(session.status()).toBe(200);svoToken=(await session.json()).token;
+  sql=await verifiedSql();
+  await sql`insert into veiculo (id,placa,marca,modelo,ano,tipo,status,is_svo) values (30003,'T30SV01','Fixture','Fixture SVO',2026,'VAN','DISPONIVEL',true)`;
+  await sql`insert into motorista (id,nome,cnh,categoria_cnh,validade_cnh,status) values (30003,'Fixture T30 SVO','30000000003','B','2099-01-01','DISPONIVEL')`;
+});
+test.afterAll(async()=>{
+  if(!sql)return;
+  try {
+    await sql`delete from ordem_coleta where solicitacao_obito_id in (select id from solicitacao_obito where atendente_id=${svoId})`;
+    await sql`delete from solicitacao_obito where atendente_id=${svoId}`;
+    await sql`delete from log_atividade where usuario_id=${svoId}`;
+    await sql`delete from usuario where id=${svoId}`;
+    await sql`delete from motorista where id=30003`;
+    await sql`delete from veiculo where id=30003`;
+  } finally {await sql.end();}
+});
 
 for (const width of [390, 768, 1280]) {
   test(`a aplicação inicia sem rolagem horizontal em ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Gestão de Frota e Transporte' })).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    const screenshot = await page.screenshot({ path: testInfo.outputPath(`preview-${width}.png`), fullPage: true });
-    await testInfo.attach(`preview-${width}`, { body: screenshot, contentType: 'image/png' });
+
+    await expect(
+      page.getByRole('heading', { name: 'Acesse sua conta' }),
+    ).toBeVisible();
+
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+
+    const screenshot = await page.screenshot({
+      path: testInfo.outputPath(`preview-${width}.png`),
+      fullPage: true,
+    });
+
+    await testInfo.attach(`preview-${width}`, {
+      body: screenshot,
+      contentType: 'image/png',
+    });
   });
 }
 
+test('rotas privadas sem sessão redirecionam para o login', async ({ page }) => {
+  for (const rota of [
+    '/admin/dashboard',
+    '/admin/configuracoes',
+    '/gestor/dashboard',
+    '/gestor/veiculos',
+    '/svo',
+  ]) {
+    await page.goto(rota);
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(
+      page.getByRole('heading', { name: 'Acesse sua conta' }),
+    ).toBeVisible();
+  }
+});
+
 test('o proxy de desenvolvimento alcança o backend', async ({ request }) => {
   const response = await request.get('/api/usuarios');
+
   expect(response.status()).toBe(404);
-  expect(await response.text()).toBe('Não encontrado.');
+
+  await expect(response.json()).resolves.toEqual({
+    error: {
+      code: 'NAO_ENCONTRADO',
+      message: 'Rota não encontrada.',
+    },
+  });
+});
+
+for(const width of [390,768,1280]) {
+  test(`dashboard integrado e limites dos demais painéis em ${width}px`,async({page},info)=>{
+    await page.setViewportSize({width,height:900});
+    await page.goto('/login'); await page.evaluate(t=>sessionStorage.setItem('token',t),admToken);
+    let kpis=0;page.on('request',req=>{if(req.url().includes('/api/dashboard/kpis'))kpis++;});
+    await page.goto('/gestor/dashboard');
+    await expect(page.locator('.card-kpi strong')).toHaveCount(4);
+    await expect(page.locator('.card-kpi strong').first()).toHaveText(/^\d+$/);
+    for(const period of ['7 dias','30 dias','Personalizado','Hoje']) await page.getByRole('button',{name:period,exact:true}).click();
+    await expect(page.locator('.card-kpi strong')).toHaveCount(4);
+    expect(kpis).toBe(0);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    await page.screenshot({path:info.outputPath(`dashboard-${width}.png`),fullPage:true});
+    await page.goto('/admin/auditoria');
+    await expect(page.locator('.pagina__descricao')).toContainText('Demonstração');
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    await page.screenshot({path:info.outputPath(`auditoria-${width}.png`),fullPage:true});
+  });
+
+  test(`Dashboard SVO usa indicadores da API em ${width}px`, async ({ page, context, request }, info) => {
+    const cards = page.locator('.svo-dashboard__kpis strong');
+    async function conferirIndicadores(navegar: () => Promise<unknown>) {
+      const [consulta] = await Promise.all([
+        page.waitForEvent('requestfinished', req => new URL(req.url()).pathname === '/api/svo/dashboard'),
+        navegar(),
+      ]);
+      expect((await consulta.response())?.status()).toBe(200);
+      // A leitura independente usa o mesmo período e atendente, inclusive após reload.
+      const resposta = await request.get(consulta.url(), { headers: { Authorization: `Bearer ${svoToken}` } });
+      expect(resposta.status()).toBe(200);
+      const { indicadores } = svoDashboardSchemas.DashboardOperacionalSvo.parse(await resposta.json());
+      await expect(cards).toHaveText([
+        String(indicadores.aguardandoTriagem), String(indicadores.confirmadasSvo),
+        String(indicadores.encaminhadasIml), String(indicadores.ordensColeta),
+      ]);
+    }
+
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/login');
+    await expect(page.getByRole('heading', { name: 'Acesse sua conta' })).toBeVisible();
+    await page.evaluate(token => sessionStorage.setItem('token', token), svoToken);
+    await conferirIndicadores(() => page.goto('/svo'));
+    await expect(page.getByRole('heading', { name: 'Dashboard SVO', exact: true })).toBeVisible();
+    await expect(page.getByText('Carregando ordens...')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath(`svo-${width}.png`), fullPage: true });
+
+    await context.setOffline(true);
+    await page.getByRole('button', { name: 'Atualizar dashboard' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'Indicadores indisponíveis' })).toBeVisible();
+    await expect(cards).toHaveText(['—', '—', '—', '—']);
+
+    await context.setOffline(false);
+    await conferirIndicadores(() => page.reload());
+  });
+}
+
+test('SVO registra solicitação aguardando triagem, sem criar ordem', async ({page,request})=>{
+  const response = await request.post('/api/svo/solicitacoes',{headers:{Authorization:`Bearer ${svoToken}`},
+    data:{localFalecimento:'Fixture',enderecoRemocao:'Endereço fictício T30',solicitanteNome:'Fixture T30'}});
+  expect(response.status()).toBe(201);
+  const body = await response.json();
+  expect(body.solicitacao.statusTriagem).toBe('AGUARDANDO_TRIAGEM');
+  expect(body.solicitacao.codigo).toBe(`#SVO-${body.solicitacao.id}`);
+  expect(body.ordemColeta).toBeUndefined();
+  const ordens = await sql`SELECT id FROM public.ordem_coleta
+    WHERE solicitacao_obito_id=${body.solicitacao.id}`;
+  expect(ordens).toHaveLength(0);
+  await page.goto('/login');
+  await page.evaluate(token=>sessionStorage.setItem('token',token),svoToken);
+  await page.goto('/svo');
+  await expect(page.getByRole('heading',{name:'Dashboard SVO'})).toBeVisible();
 });
