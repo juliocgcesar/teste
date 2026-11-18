@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+.env*
+!.env.example
+uploads/*
+!uploads/.gitkeep
+test-results/
+playwright-report/
+*.log
+.DS_Store
+
+# Identidade local não secreta, vinculada ao container provisionado pelo harness.
+.test-db/
+backend/src/database/supabase/.temp/
+backend/src/database/supabase/.branches/

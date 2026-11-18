@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { validarJwt } from '../../security/jwt.js';
+import { autenticarRequisicao } from '../../security/session.js';
+import { autorizarPerfis } from '../../security/authorization.js';
 import {
   dashboardController,
   dashboardGraficosController,
@@ -7,41 +8,18 @@ import {
   dashboardGestorController,
 } from './dashboard.controller.js';
 
-function enviarErro(
-  response: ServerResponse,
-  status: number,
-  code: string,
-  message: string
-): void {
-  response.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-  });
-
-  response.end(
-    JSON.stringify({
-      error: { code, message },
-    })
-  );
-}
-
+/** Autoriza as consultas do dashboard; o dispatcher restringe os métodos. */
 export async function dashboardRoute(
   request: IncomingMessage,
   response: ServerResponse
 ): Promise<void> {
-  const usuario = await validarJwt(request.headers.authorization);
+  const usuario = await autenticarRequisicao(request, response);
 
   if (!usuario) {
-    enviarErro(response, 401, 'NAO_AUTENTICADO', 'Autenticação necessária.');
     return;
   }
 
-  if (
-    usuario.perfil !== 'ADMINISTRADOR' &&
-    usuario.perfil !== 'GESTOR_FROTA'
-  ) {
-    enviarErro(response, 403, 'ACESSO_NEGADO', 'Acesso não permitido.');
-    return;
-  }
+  if (!autorizarPerfis(usuario, ['ADM', 'GESTOR_FROTA'], response)) return;
 
   const caminho = new URL(
     request.url ?? '',
@@ -49,7 +27,7 @@ export async function dashboardRoute(
   ).pathname;
 
   if (caminho === '/api/dashboard/graficos') {
-    await dashboardGraficosController(response);
+    await dashboardGraficosController(response,new URL(request.url??'', 'http://localhost').searchParams);
     return;
   }
 
@@ -59,7 +37,7 @@ export async function dashboardRoute(
   }
 
   if (caminho === '/api/dashboard/gestor') {
-    await dashboardGestorController(response);
+    await dashboardGestorController(response,new URL(request.url??'', 'http://localhost').searchParams);
     return;
   }
 
