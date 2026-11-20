@@ -1,13 +1,3 @@
-
-
-
-
-
-
-
-
-
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import "./Viagens.css";
@@ -46,10 +36,10 @@ type TripNotification = {
 // Rotas HTTP do backend (não são caminhos de arquivos no computador).
 // Configure a URL do servidor em frontend/.env usando VITE_API_BASE_URL.
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
+// Endpoint registrado no contrato do backend para a lista do motorista.
 const API_TRIPS_PATH = import.meta.env.VITE_API_TRIPS_PATH ?? "/api/viagens/minhas";
 const API_NOTIFICATIONS_PATH = import.meta.env.VITE_API_NOTIFICATIONS_PATH ?? "/api/notificacoes";
 const API_SESSION_PATH = import.meta.env.VITE_API_SESSION_PATH ?? "/api/auth/sessao";
-const API_DRIVER_PATH = import.meta.env.VITE_API_DRIVER_PATH ?? "/api/motoristas/me";
 
 function getApiUrl(path: string) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
@@ -71,21 +61,38 @@ function getStoredToken(): string | null {
 
 /** Executa apenas requisições GET autenticadas para consulta de dados. */
 async function getJson(url: string, signal?: AbortSignal): Promise<unknown> {
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-  };
+  const headers: Record<string, string> = { Accept: "application/json" };
   const token = getStoredToken();
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
+  if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers,
-    signal,
+  const response = await fetch(url, { method: "GET", headers, signal });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
+    const message = error && typeof error.message === "string"
+      ? error.message
+      : `A API respondeu com status ${response.status}.`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+/** Autentica no backend e guarda o JWT na mesma chave usada pelo app. */
+async function loginWithBackend(email: string, senha: string): Promise<void> {
+  const response = await fetch(getApiUrl("/api/auth/login"), {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ email, senha }),
   });
-  if (!response.ok) throw new Error(`A API respondeu com status ${response.status}.`);
-  return response.json() as Promise<unknown>;
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
+    throw new Error(error && typeof error.message === "string" ? error.message : `Falha no login (HTTP ${response.status}).`);
+  }
+  if (!isRecord(payload) || typeof payload.token !== "string" || !payload.token) {
+    throw new Error("O backend não retornou um token de autenticação válido.");
+  }
+  sessionStorage.setItem("token", payload.token);
 }
 
 function toTripListItem(raw: unknown): TripListItem | null {
@@ -95,14 +102,12 @@ function toTripListItem(raw: unknown): TripListItem | null {
   if (!id) return null;
 
   const rawStatus = String(raw.status ?? "").toUpperCase();
-  let status: "Agendada" | "Em andamento" | "Concluída" = "Agendada";
-  if (rawStatus === "EM_TRANSPORTE" || rawStatus === "EM_ANDAMENTO" || rawStatus === "EM ANDAMENTO") {
-    status = "Em andamento";
-  } else if (rawStatus === "CONCLUIDA" || rawStatus === "CONCLUÍDA") {
-    status = "Concluída";
-  } else {
-    status = "Agendada";
-  }
+  const status: TripListItem["status"] =
+    rawStatus === "EM_TRANSPORTE" || rawStatus === "EM_ANDAMENTO" || rawStatus === "EM ANDAMENTO"
+      ? "Em andamento"
+      : rawStatus === "CONCLUIDA" || rawStatus === "CONCLUÍDA"
+        ? "Concluída"
+        : "Agendada";
 
   const dateStr = typeof raw.dataHoraSaida === "string"
     ? raw.dataHoraSaida
@@ -191,7 +196,7 @@ function toBackendTripListItem(raw: unknown): TripListItem | null {
         ? "Concluída"
         : "Agendada";
 
-  const backendId = raw.id != null && /^-?\\d+$/.test(String(raw.id))
+  const backendId = raw.id != null && /^-?\d+$/.test(String(raw.id))
     ? String(raw.id)
     : undefined;
 
@@ -418,22 +423,29 @@ function CheckIcon() {
 }
 
 
-function LoginScreen({ onLogin }: { onLogin: () => void }) {
-  const [username, setUsername] = useState("");
+function LoginScreen({ onLogin }: { onLogin: (email: string, senha: string) => Promise<void> }) {
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(false);
 
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!username.trim() || !password) {
-      setNotice("Informe seu usuário e sua senha para continuar.");
+    setNotice("");
+    if (!email.trim() || !password) {
+      setNotice("Informe seu e-mail e sua senha para continuar.");
       return;
     }
-    onLogin();
+    setLoading(true);
+    try {
+      await onLogin(email.trim(), password);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Não foi possível entrar. Tente novamente.");
+    } finally {
+      setLoading(false);
+    }
   }
-
 
   return (
     <main className="login-page">
@@ -445,14 +457,15 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
         </header>
         <form className="login-form" onSubmit={handleSubmit}>
           <div className="field">
-            <label htmlFor="username">Usuário</label>
+            <label htmlFor="username">E-mail</label>
             <input
               id="username"
-              name="username"
+              name="email"
+              type="email"
               autoComplete="username"
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              placeholder="Digite seu usuário"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="Digite seu e-mail"
               required
             />
           </div>
@@ -478,12 +491,12 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
                 <EyeIcon visible={showPassword} />
               </button>
             </div>
-            <p className="helper-text">Acesse com os dados fornecidos pela sua transportadora.</p>
+            <p className="helper-text">Acesse com os dados fornecidos pela sua instituição.</p>
           </div>
-          <button className="submit-button" type="submit">
-            <EnterIcon /><span>Entrar</span>
+          <button className="submit-button" type="submit" disabled={loading}>
+            <EnterIcon /><span>{loading ? "Entrando…" : "Entrar"}</span>
           </button>
-          {notice && <p className="notice" role="status">{notice}</p>}
+          {notice && <p className="notice" role="alert">{notice}</p>}
         </form>
         <div className="profile-note">
           <span className="shield-icon"><ShieldIcon /></span>
@@ -493,7 +506,6 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
     </main>
   );
 }
-
 
 function BottomNavigation({ active = "home", onHome, onTrips, onNotifications, onProfile }: { active?: "home" | "trips" | "notifications" | "profile" | "none"; onHome?: () => void; onTrips?: () => void; onNotifications?: () => void; onProfile?: () => void }) {
   return (
@@ -2078,16 +2090,6 @@ export default function App() {
       if (sessionResult.status === "fulfilled") {
         driver = toDriverProfile(sessionResult.value);
       }
-      if (!driver) {
-        try {
-          const driverPayload = await getJson(getApiUrl(API_DRIVER_PATH), signal);
-          if (signal?.aborted) return;
-          driver = toDriverProfile(driverPayload);
-        } catch {
-          if (signal?.aborted) return;
-        }
-      }
-
       if (signal?.aborted) return;
       setNotifications(nextNotifications);
       setDriverProfile(driver);
@@ -2095,17 +2097,21 @@ export default function App() {
     } catch (err) {
       if (signal?.aborted) return;
       console.warn("Não foi possível carregar as viagens da API:", err);
-      setApiError("Não foi possível carregar as viagens. Verifique a conexão e tente novamente.");
+      setApiError(err instanceof Error ? err.message : "Não foi possível carregar as viagens. Verifique a conexão e tente novamente.");
     } finally {
       if (!signal?.aborted) setApiLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    if (screen === "login" || !getStoredToken()) {
+      setApiLoading(false);
+      return;
+    }
     const controller = new AbortController();
     void loadApiData(controller.signal);
     return () => controller.abort();
-  }, [loadApiData]);
+  }, [loadApiData, screen]);
 
   const hasStarted = selectedTrip?.status === "Em andamento";
   const hasFinished = selectedTrip?.status === "Concluída";
@@ -2227,9 +2233,9 @@ export default function App() {
 
   if (screen === "tripInfo" && selectedTrip) return <TripInfoScreen trip={selectedTrip} onBack={() => setScreen("tripList")} onHome={() => setScreen("trips")} onTrips={() => setScreen("tripList")} onNotifications={() => setScreen("notifications")} onProfile={() => setScreen("profile")} />;
   if (screen === "notifications") return <NotificationsScreen notifications={notifications} onHome={() => setScreen("trips")} onTrips={() => setScreen("tripList")} onProfile={() => setScreen("profile")} isLoading={apiLoading} loadError={apiError} onRetry={() => { void loadApiData(); }} />;
-  if (screen === "profile") return <ProfileScreen onHome={() => setScreen("trips")} onTrips={() => setScreen("tripList")} onNotifications={() => setScreen("notifications")} onLogout={() => setScreen("login")} driver={driverProfile} />;
+  if (screen === "profile") return <ProfileScreen onHome={() => setScreen("trips")} onTrips={() => setScreen("tripList")} onNotifications={() => setScreen("notifications")} onLogout={() => { sessionStorage.removeItem("token"); setDriverProfile(null); setTripListData([]); setSelectedTrip(null); setScreen("login"); }} driver={driverProfile} />;
   if (screen === "tripList") return <TripsListScreen trips={tripListData} activeTab={tripTab} onTabChange={setTripTab} onSelectTrip={openTrip} onHome={() => setScreen("trips")} onNotifications={() => setScreen("notifications")} onProfile={() => setScreen("profile")} isLoading={apiLoading} loadError={apiError} onRetry={() => { void loadApiData(); }} />;
   if (screen === "trips") return <HomeScreen trips={tripListData} driver={driverProfile} onViewTrip={openTrip} onHome={() => setScreen("trips")} onTrips={() => setScreen("tripList")} onNotifications={() => setScreen("notifications")} onProfile={() => setScreen("profile")} isLoading={apiLoading} loadError={apiError} onRetry={() => { void loadApiData(); }} />;
-  return <LoginScreen onLogin={() => setScreen("trips")} />;
+  return <LoginScreen onLogin={async (email, senha) => { await loginWithBackend(email, senha); setScreen("trips"); }} />;
 }
 
